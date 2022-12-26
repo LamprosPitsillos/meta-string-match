@@ -36,6 +36,8 @@ stream position, and then call the callback with that new position.
 
 namespace meta {
 
+	using size_t = std::size_t;
+
 	// NOTE: See srcembed for a detailed explanation of why this works. After reading that, you'll
 	// also understand that [[noreturn]] probably isn't useless here.
 	[[noreturn]] consteval void static_fail_with_msg(const char * const);
@@ -467,7 +469,7 @@ return result_pair; \
 meta::string_matcher_t<decltype( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH )::second> matcher_name; \
 \
 const void * const matcher_name ## _DUMMY_VARIABLE_DO_NOT_TOUCH = [&matcher_name, &matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH]() { \
-for (size_t i = 0; i < decltype(matcher_name)::length * meta::string_matcher_table_width; i++) { \
+for (std::size_t i = 0; i < decltype(matcher_name)::length * meta::string_matcher_table_width; i++) { \
 matcher_name.data[0][i] = { \
 matcher_name.data[0] + ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].next_state * meta::string_matcher_table_width, \
 ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].callback \
