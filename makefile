@@ -35,4 +35,4 @@ test/.dirstamp:
 	touch test/.dirstamp
 
 clean:
-	git clean -df
+	git clean -fdx
