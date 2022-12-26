@@ -13,7 +13,7 @@ endif
 
 CLANG_PREAMBLE := clang++-15 -std=$(CPP_STD) -$(OPTIMIZATION_LEVEL) $(POSSIBLE_WALL) -fno-exceptions
 
-.PHONY all unoptimized clean
+.PHONY: all unoptimized clean
 
 all: test/bin/$(BINARY_NAME)
 
@@ -27,11 +27,11 @@ test/bin/main.o: test/main.cpp $(MAIN_CPP_INCLUDES) test/bin/.dirstamp
 	$(CLANG_PREAMBLE) -c -I. -o test/bin/main.o test/main.cpp
 
 test/bin/.dirstamp: test/.dirstamp
-	mkdir test/bin
+	mkdir -p test/bin
 	touch test/bin/.dirstamp
 
 test/.dirstamp:
-	mkdir test
+	mkdir -p test
 	touch test/.dirstamp
 
 clean:
