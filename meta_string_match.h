@@ -43,8 +43,8 @@ namespace meta {
 	[[noreturn]] consteval void static_fail_with_msg(const char * const);
 
 	struct const_string {
-		const char * const data = nullptr;
-		const size_t length = 0;
+		const char * const data;
+		const size_t length;
 
 		template <size_t size>
 		consteval const_string(const char (&string)[size]) : data(string), length(size - 1) { }
@@ -105,7 +105,9 @@ namespace meta {
 		void (*callback)(size_t);	// NOTE: callbacks get called with the position in the input character stream as the only parameter
 	};
 
-	inline constexpr size_t string_matcher_table_width = 128;
+	inline constexpr size_t string_matcher_table_width = (size_t)(unsigned char)-1 + 1;
+	// NOTE: We make the table as wide as the the num of values representable by char (which we elsewhere make sure is not bigger than 1 byte),
+	// so that non-ASCII characters can be correctly identified as invalid without extra overhead when following the table.
 
 	template <size_t template_length>
 	class string_matcher_with_indices_t {
@@ -155,6 +157,37 @@ namespace meta {
 		   NOTE: This could easily be standardized and implemented differently (like I said above with the regions and the tracking),
 		   but apparently logic is something the language designers don't have too good a grasp on at times.
 		*/
+
+		const string_matcher_table_element_t* state = data[0];
+
+		size_t input_stream_position_at_last_match;
+		void (*callback_ptr_at_last_match)(size_t) = nullptr;
+
+		size_t input_stream_position = 0;
+
+		bool match_character(char character) noexcept {
+			const unsigned char unsigned_character = character;
+			if (state[unsigned_character].callback) {
+				callback_ptr_at_last_match = state[unsigned_character].callback;
+				input_stream_position_at_last_match = input_stream_position;
+			}
+			input_stream_position++;
+			if (!state[unsigned_character].next_state_ptr) {
+				state = data[0];
+				if (!callback_ptr_at_last_match) { return false; }
+				callback_ptr_at_last_match(input_stream_position_at_last_match);
+				callback_ptr_at_last_match = nullptr;
+				return true;
+			}
+			state = state[unsigned_character].next_state_ptr;
+			return false;
+		}
+
+		void full_reset() noexcept {
+			state = data[0];
+			callback_ptr_at_last_match = nullptr;
+			input_stream_position = 0;
+		}
 	};
 
 	// NOTE: The below function doesn't work because compile-time functions can't change variables outside of their scope.
@@ -186,6 +219,7 @@ namespace meta {
 	template <size_t length>
 	struct func_ptr_array_wrapper_t {
 		using func_ptr_t = void(*)(size_t);
+
 		func_ptr_t data[length];
 
 		consteval func_ptr_t& operator[](size_t index) { return data[index]; }
@@ -197,7 +231,10 @@ namespace meta {
 		result[0] = first_func_ptr;
 
 		if constexpr (sizeof...(func_ptrs) != 0) {
-			func_ptr_array_wrapper_t<sizeof...(func_ptrs)> rest_of_result = convert_func_ptr_pack_to_array(func_ptrs...);
+			//func_ptr_array_wrapper_t<sizeof...(func_ptrs)> rest_of_result = convert_func_ptr_pack_to_array(func_ptrs...);
+			// TODO: THE ABOVE DOESN'T WORK FOR SOME REASON, SEEMS TO BE A CLANG BUG!!! REPORT!!!!!
+			func_ptr_array_wrapper_t<sizeof...(func_ptrs)> rest_of_result;
+			rest_of_result = convert_func_ptr_pack_to_array(func_ptrs...);
 			for (size_t i = 0; i < sizeof...(func_ptrs); i++) { result[i + 1] = rest_of_result[i]; }
 		}
 
@@ -214,16 +251,27 @@ namespace meta {
 		consteval operator bool() const { return true; }
 	};
 
+	// NOTE: Empty structs/classes are well defined in the C++ spec (although being UB in the C spec).
+	// The following line is totally valid, there is one thing you have to watch out for though: sizeof(zero_out_t) is never equal to zero.
+	// It must at minimum be 1, but the implementation can define exactly how big, so it could be 50 or 1000, although that practically
+	// never happens (so don't worry about taking up space, AFAIK it's 1 most of the time).
+	// REASONING: A struct with size 0 could technically be located at the exact same spot as another struct, because it doesn't
+	// take up any memory, and that doesn't make any sense. Think about it this way: what would an array of these structs look like?
+	// The more I think about it, the more I think one could make everything work with 0-sized empty structs, but I guess the
+	// designers chose not to go down that route to avoid causing unnecessary confusion.
+	// TODO: Research more about this.
+	struct zero_out_t { } zero_out;
+
 	// NOTE: I know the stdlib has one of these, but I wanted to make my own.
 	// NOTE: Interestingly, C++ has the facility to deduce class template args from a constructor call, but I think
 	// that would require me to forgoe the forwarding and create two separate contructors for rvalue refs and lvalue refs.
 	// Maybe next time.
 	template <typename first_t, typename second_t>
 	struct pair_t {
-		first_t first { };
-		second_t second { };
+		first_t first;
+		second_t second;
 
-		consteval pair_t() = default;
+		consteval pair_t(zero_out_t zero_out_flag) : first { }, second { } { }
 
 		/*
 IMPORTANT: Remember that typename std::enable_if<condition, bool>::type = true/false is the correct way to use enable_if.
@@ -274,13 +322,18 @@ not even rely on SFINAE.
 		static_assert(sizeof...(func_ptrs) != 0, "failed to create string matcher, no callbacks provided");
 		//func_ptr_array_wrapper_t<sizeof...(func_ptrs)> func_ptr_array = convert_func_ptr_pack_to_array(func_ptrs...);
 		// TODO: The above causes clang to bug out. Presumably same bug as the other spots where this happens. REPORT!!!!!
+		// TODO: This and the other bugs in this file might be totally gone now that I've updated my clang version, test that out!
 		func_ptr_array_wrapper_t<sizeof...(func_ptrs)> func_ptr_array;
 		func_ptr_array = convert_func_ptr_pack_to_array(func_ptrs...);
 
 		// NOTE: We zero the table out because the error state of an element is when the next_state size_t is 0.
-		// Probably the fastest way to do it because the interpreter can do it in one operation instead of interpreting a memset or
+		// Probably the fastest way to do it because the interpreter can do it in a couple operations instead of interpreting a memset or
 		// something.
-		pair_t<string_matcher_with_indices_t<table_length>, size_t> result_pair;
+		// NOTE: The classic { } doesn't work here because it's not a POD type. It's got a custom constructor and no
+		// default constructor, meaning { } can't even default to default initialization.
+		// Instead, I've added another constructor that does the zeroing out by value initializing the
+		// member variables. If those aren't zero initializable that's a problem, but they are in this case so it's fine.
+		pair_t<string_matcher_with_indices_t<table_length>, size_t> result_pair(zero_out);
 		auto& string_matcher_with_indices = result_pair.first;
 
 		/*
@@ -299,13 +352,14 @@ not even rely on SFINAE.
 		*/
 
 		size_t table_row = 0;
+		size_t last_table_row;
+		size_t merge_row_current = 0;
+		size_t last_merge_row;
 		size_t i = 0;			// index into the matcher spec
 		size_t string_index = 0;	// used to get the correct function pointer for the end elements
 
 		unsigned char character = -1;
 		unsigned char last_character;
-
-		// TODO: At the end, you need to make sure the func ptr is in there as well.
 
 		while (true) {
 			for (; i < meta_matcher_spec.length; i++) {
@@ -323,8 +377,9 @@ not even rely on SFINAE.
 				switch (character) {
 				case '|':
 					if (last_character != -1) {
-						string_matcher_with_indices.data[table_row][last_character] = { 0, func_ptr_array[string_index] };
-						last_character = -1;		// to make sure that empty strings don't mess up the system
+						// NOTE: We don't set last_table_row on purpose here, don't worry.
+						string_matcher_with_indices.data[last_table_row][last_character] = { 0, func_ptr_array[string_index] };
+						character = -1;		// to make sure that empty strings don't mess up the system
 					}
 					string_index++;
 					i++;
@@ -342,15 +397,15 @@ not even rely on SFINAE.
 					}
 					// fallthrough
 				default:
-					const size_t new_table_row = table_row + 1;
-					string_matcher_with_indices.data[table_row][character] = { new_table_row, nullptr };
-					table_row = new_table_row;
+					last_table_row = table_row;
+					// IMPORTANT: The right side of this gets evaluated first and then the assignment is done.
+					// This is deadly if your doing a[var] = ++var and expecting it to
+					// basically be a[4] = 5;      BE VERY CAREFUL WITH THIS STUFF!
+					string_matcher_with_indices.data[last_table_row][character] = { ++table_row, nullptr };
 					continue;
 				}
 				break;		// NOTE: We're forced into doing this because consteval's don't allow goto.
 			}
-
-			size_t merge_row_current = 0;
 
 			for (; i < meta_matcher_spec.length; i++) {
 				//char character = meta_matcher_spec[i]; <-- THIS DOESN'T WORK!!! PROBS CLANG BUG!!! TODO: RESEARCH AND REPORT!!!!
@@ -364,8 +419,8 @@ not even rely on SFINAE.
 				case '|':
 					if (last_character != -1) {
 						// We only set callbacks here on purpose, this is the correct behavior for longest match.
-						string_matcher_with_indices.data[merge_row_current][last_character].callback = func_ptr_array[string_index];
-						last_character = -1;		// to make sure that empty strings don't mess up the system
+						string_matcher_with_indices.data[last_merge_row][last_character].callback = func_ptr_array[string_index];
+						character = -1;		// to make sure that empty strings don't mess up the system
 					}
 					string_index++;
 					merge_row_current = 0;
@@ -407,14 +462,14 @@ not even rely on SFINAE.
 					// TODO: Research and find out what is different about pointers from unsigned integers.
 					// I always thought pointers were basically integers that you dereference, so why is overflow undefined for them?
 					string_matcher_with_indices_table_element_t& element = string_matcher_with_indices.data[merge_row_current][character];
-					// TODO: All this code actually already finds the longest match, we just need to make sure
-					// that if the input stream ends, a shorter match still makes it if the longer one isn't there.
-					// The best way to do that is to separate the next_state from the callback. elements with next states
-					// can still have callbacks that get called if the stream happens to end there.
 					if (element.next_state == 0) {
-						element = { ++table_row, nullptr };
+						last_table_row = merge_row_current;	// in order to ensure the ending if's change the right row
+						element.next_state = table_row;
+						merge_row_current = 0;		// in order to make sure that the ending if's get triggered right
+						i++;
 						break;
 					}
+					last_merge_row = merge_row_current;
 					merge_row_current = element.next_state;
 					continue;
 				}
@@ -422,11 +477,18 @@ not even rely on SFINAE.
 			}
 			if (i == meta_matcher_spec.length) { break; }		// NOTE: Again, necessary because consteval's don't allow goto.
 		}
-		// TODO: Make the following not always happen, it only should happen when the last row isn't a mixed row.
-		// You don't have to check the entire row, I think there is a better way with flags. See about simply using merge_row_current.
-		// If the last row is a mixed row, just set the callback, don't touch the next_state thing. This will ensure longest match
-		// while also giving possibility of shorter match if stream ends.
-		string_matcher_with_indices.data[table_row - 1][character] = { 0, func_ptr_array[string_index] };
+
+		if (character != -1) {
+			if (merge_row_current != 0) {
+				// We only set callbacks here on purpose, this is the correct behavior for longest match.
+				string_matcher_with_indices.data[last_merge_row][character].callback = func_ptr_array[string_index];
+			} else {
+				string_matcher_with_indices.data[last_table_row][character] = { 0, func_ptr_array[string_index] };
+			}
+			string_index++;
+		}
+
+		if (string_index != sizeof...(func_ptrs)) { static_fail_with_msg("failed to create string matcher, too many callbacks specified"); }
 
 		// NOTE: I wanted to trim the unused section of the string matcher table here, but that doesn't work because
 		// the length of the used part of the table isn't a constant expression and we have no way of getting it into a template
@@ -441,11 +503,14 @@ not even rely on SFINAE.
 	template <const const_string& meta_matcher_spec, typename... func_ret_types>
 	// NOTE: Rule of thumb for where the ... goes: before the variable name.
 	consteval auto inner_create_string_matcher_with_indices(func_ret_types (*...func_ptrs)(size_t)) {
-		return compile_to_table<calculate_table_length(meta_matcher_spec)>(meta_matcher_spec, func_ptrs...);
+		constexpr size_t table_length = calculate_table_length(meta_matcher_spec);
+		static_assert(table_length != 0, "failed to create string matcher, the resulting table length would be 0 (it would not match anything)");
+		return compile_to_table<table_length>(meta_matcher_spec, func_ptrs...);
 	}
 
 	template <const const_string& meta_matcher_spec, typename... callback_types>
 	consteval auto create_string_matcher_with_indices(callback_types... callbacks) {
+		static_assert(sizeof(char) == 1, "meta_string_match.h cannot be used on systems where char size is bigger than 1");
 		return inner_create_string_matcher_with_indices<meta_matcher_spec>(((void(*)(size_t))callbacks)...);
 	}
 
@@ -472,10 +537,9 @@ meta::string_matcher_t<decltype( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO
 \
 const void * const matcher_name ## _DUMMY_VARIABLE_DO_NOT_TOUCH = [](auto& matcher_name, auto& matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ) { \
 for (std::size_t i = 0; i < std::remove_reference_t<decltype(matcher_name)>::length * meta::string_matcher_table_width; i++) { \
-matcher_name.data[0][i] = { \
-matcher_name.data[0] + ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].next_state * meta::string_matcher_table_width, \
-( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].callback \
-}; \
+if (( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].next_state == 0) { matcher_name.data[0][i].next_state_ptr = nullptr; } \
+else { matcher_name.data[0][i].next_state_ptr = matcher_name.data[0] + ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].next_state * meta::string_matcher_table_width; } \
+matcher_name.data[0][i].callback = ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].callback; \
 } \
 return nullptr; \
 }(matcher_name, ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH )) \
