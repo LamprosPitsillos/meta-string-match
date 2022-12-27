@@ -342,7 +342,9 @@ not even rely on SFINAE.
 					}
 					// fallthrough
 				default:
-					string_matcher_with_indices.data[table_row][character] = { ++table_row, nullptr };
+					const size_t new_table_row = table_row + 1;
+					string_matcher_with_indices.data[table_row][character] = { new_table_row, nullptr };
+					table_row = new_table_row;
 					continue;
 				}
 				break;		// NOTE: We're forced into doing this because consteval's don't allow goto.
@@ -461,21 +463,21 @@ static constexpr meta::const_string meta_matcher_spec = meta::const_string(match
 \
 constexpr auto string_matcher_with_indices_pair = meta::create_string_matcher_with_indices<meta_matcher_spec>(__VA_ARGS__); \
 \
-auto result_pair = meta::create_pair_with_compile_time_second_t<string_matcher_with_indices_pair.second>(string_matcher_with_indices_pair.first); \
+const auto result_pair = meta::create_pair_with_compile_time_second_t<string_matcher_with_indices_pair.second>(string_matcher_with_indices_pair.first); \
 \
 return result_pair; \
 }(); \
 \
 meta::string_matcher_t<decltype( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH )::second> matcher_name; \
 \
-const void * const matcher_name ## _DUMMY_VARIABLE_DO_NOT_TOUCH = [&matcher_name, &matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH]() { \
-for (std::size_t i = 0; i < decltype(matcher_name)::length * meta::string_matcher_table_width; i++) { \
+const void * const matcher_name ## _DUMMY_VARIABLE_DO_NOT_TOUCH = [](auto& matcher_name, auto& matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ) { \
+for (std::size_t i = 0; i < std::remove_reference_t<decltype(matcher_name)>::length * meta::string_matcher_table_width; i++) { \
 matcher_name.data[0][i] = { \
 matcher_name.data[0] + ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].next_state * meta::string_matcher_table_width, \
 ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH ).first.data[0][i].callback \
 }; \
 } \
 return nullptr; \
-}() \
+}(matcher_name, ( matcher_name ## _INDICES_PLUS_LENGTH_VERSION_DO_NOT_TOUCH )) \
 
 }
